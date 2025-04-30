@@ -2,7 +2,6 @@ from typing import Any, Dict, Optional, Tuple
 
 from rich import print
 
-from .coder import Coder
 from .react_experimenter import ReactExperimenter
 from .reviewer import Reviewer
 from .thinker import Thinker
@@ -30,14 +29,6 @@ class TinyScientist:
             prompt_template_dir=prompt_template_dir,
             tools=[],
             iter_num=3,
-        )
-
-        self.coder = Coder(
-            model=model,
-            output_dir=output_dir,
-            prompt_template_dir=prompt_template_dir,
-            max_iters=4,
-            max_runs=3,
         )
 
         self.writer = Writer(
@@ -70,19 +61,6 @@ class TinyScientist:
         print(idea)
         print("✅ Idea generated.")
         return idea
-
-    def code(
-        self,
-        idea: Dict[str, Any],
-        baseline_results: Optional[Dict[str, Any]] = {},
-    ) -> Tuple[bool, str]:
-        print("💻 Running experiments...")
-        status, exp_path = self.coder.run(idea=idea, baseline_results=baseline_results)
-        if status:
-            print(f"✅ Experiment completed successfully. Results saved at {exp_path}")
-        else:
-            print(f"❌ Experiment failed. Please check {exp_path} for details.")
-        return status, exp_path
 
     def react_experiment(
         self,
