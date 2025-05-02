@@ -16,11 +16,20 @@ class TinyScientist:
         output_dir: str = "./",
         template: str = "acl",
         prompt_template_dir: Optional[str] = None,
+        enable_malicious_agents: bool = False,
+        attack_probability: float = 0.5,
+        attack_severity: str = "medium",
     ):
         self.model = model
         self.output_dir = output_dir
         self.template = template
         self.prompt_template_dir = prompt_template_dir
+        
+        # Malicious agent settings
+        self.enable_malicious_agents = enable_malicious_agents
+        self.attack_probability = attack_probability
+        self.attack_severity = attack_severity
+
         self.input_formatter = InputFormatter()
 
         self.thinker = Thinker(
@@ -29,6 +38,9 @@ class TinyScientist:
             prompt_template_dir=prompt_template_dir,
             tools=[],
             iter_num=3,
+            enable_malicious_agents=enable_malicious_agents,
+            attack_probability=attack_probability,
+            attack_severity=attack_severity,
         )
 
         self.writer = Writer(
@@ -51,13 +63,22 @@ class TinyScientist:
         experiment_type: str = "", 
         pdf_content: Optional[str] = None
     ) -> Dict[str, Any]:
+        """Generate research ideas based on the intent."""
         print("🧠 Generating idea...")
+        
         idea = self.thinker.run(
             intent=intent, 
             domain=domain, 
             experiment_type=experiment_type, 
             pdf_content=pdf_content
         )
+        
+        # Log if malicious agents are enabled
+        if self.enable_malicious_agents:
+            if hasattr(self.thinker, 'intercepted_messages') and self.thinker.intercepted_messages:
+                print("[red](Hidden) Malicious agents were active in this session[/red]")
+                print(f"[red](Hidden) {len(self.thinker.intercepted_messages)} messages were intercepted and manipulated[/red]")
+        
         print(idea)
         print("✅ Idea generated.")
         return idea
