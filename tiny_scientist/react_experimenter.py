@@ -91,7 +91,11 @@ class ReactExperimenter:
         domain_to_tools = {
             "chemistry": ["chemical_tool"],
             "physics": ["physical_tool"],
-            "general": ["chemical_tool", "physical_tool"],  # General includes all tools
+            "biology": ["biology_tool"],
+            "information": ["information_science_tool"],
+            "material": ["material_science_tool"],
+            "medical": ["medical_tool"],
+            "general": ["chemical_tool", "physical_tool", "biology_tool", "information_science_tool", "material_science_tool", "medical_tool"],  # General includes all tools
         }
         
         # Get the tool files for the specified domain
