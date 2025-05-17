@@ -173,6 +173,7 @@ def main() -> None:
 
     # Commented out code/write/review sections
     """
+
     status, experiment_dir = scientist.code(
         idea=idea, baseline_results=baseline_results
     )
