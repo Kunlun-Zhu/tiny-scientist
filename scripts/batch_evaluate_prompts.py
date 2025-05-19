@@ -1,284 +1,536 @@
 import argparse
 import json
 import os
-from multiprocessing import Pool, cpu_count
-# Updated imports based on class locations and new utils
-from tiny_scientist import Thinker, SafetyEvaluator # ResearchIdea might not be directly used here now
-from tiny_scientist.prompts.prompts import AttackPrompts, DefensePrompts # ScientistPrompts not used directly by script
-from tiny_scientist.utils.llm import create_client # For creating the LLM client
+import traceback
+from multiprocessing import Pool, Manager, Lock, cpu_count
+from functools import partial
+from datetime import datetime # For unique output sub-directories
+from typing import List, Dict, Optional, Any
+import logging
+import sys
 
-# Ensure the output directory exists
-os.makedirs("output/batch_evaluation_jsonl", exist_ok=True)
-OUTPUT_FILE = "output/batch_evaluation_jsonl/batch_results.jsonl"
-STATS_FILE = "output/batch_evaluation_jsonl/batch_statistics.json"
+# TinyScientist imports
+from tiny_scientist import Thinker, SafetyEvaluator
+from tiny_scientist.prompts.prompts import AttackPrompts, DefensePrompts
+from tiny_scientist.utils.llm import create_client
 
-# Default model names
+# Default model names (can be overridden by args)
 DEFAULT_THINKER_MODEL = "gpt-3.5-turbo"
-DEFAULT_EVALUATOR_MODEL = "gpt-4o"
+DEFAULT_EVALUATOR_MODEL = "gpt-4o" # SafetyEvaluator is used by Thinker
 
-# Global LLM client and model name - to be initialized in main()
-# This avoids re-creating clients in each process if possible, 
-# but multiprocessing with some LLM clients can be tricky.
-# For now, let's initialize it per process in `process_prompt` for safety with multiprocessing.
-# If LLMAPIFactory handles shared clients or if create_client is lightweight, this can be optimized.
-
-# Placeholder for loading prompts (Unchanged from previous version)
-def load_prompts():
+# --- Worker Function ---
+def process_task_for_idea_generation(task_info_tuple, common_args, overall_output_dir_base, file_lock):
     """
-    Loads prompts for different scenarios and scientific domains.
-    Reads the first 10 entries from 'AAA Dataset/material.json' for Material Science.
+    Processes a single task (intent + scenario configuration) to generate a research idea using Thinker.
+    Writes the result to a shared JSONL file.
     """
-    output_prompts = []
-    data_file_path = "AAA Dataset/material.json" # Path to your data file
-    domain = "Material Science"
+    task_original_index, task_config = task_info_tuple # task_config is what load_tasks generates per scenario
+    task_id = task_config.get("id", f"task_{task_original_index}_{task_config.get('scenario', 'unknown').lower()}")
+    intent = task_config.get("intent")
+    domain = task_config.get("domain")
+    scenario = task_config.get("scenario")
 
+    entry_to_write = {
+        "task_id": task_id,
+        "original_intent": intent,
+        "domain": domain,
+        "scenario": scenario,
+        "thinker_model": common_args.thinker_model_name,
+        "evaluator_model": common_args.evaluator_model_name, # For SafetyEvaluator inside Thinker
+        "l2_defense_enabled_for_run": common_args.enable_defense_layer_2, # Global L2 flag for the run
+        "status": "failed_setup", # Default status
+        "thinker_output": None,
+        "error_details": None,
+        "traceback": None
+    }
+
+    if not intent or not domain:
+        print(f"[WARNING] Worker {os.getpid()}: Task ID {task_id} is missing 'intent' or 'domain'. Skipping.")
+        entry_to_write["error_details"] = "Missing intent or domain in task_config."
+        entry_to_write["status"] = "skipped_missing_data"
+    else:
+        print(f"[INFO] Worker {os.getpid()}: Processing Task ID {task_id} (Scenario: {scenario}, Domain: {domain})")
+        # Per-task artifact directory (optional, Thinker might not save files directly in this flow)
+        # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f") # Added microseconds for more uniqueness
+        # current_task_artifact_dir = os.path.join(overall_output_dir_base, f"{task_id}_{timestamp}")
+        # os.makedirs(current_task_artifact_dir, exist_ok=True)
+        # entry_to_write["task_artifact_directory"] = current_task_artifact_dir
+
+        try:
+            # Determine the model for Thinker based on whether malicious agent is enabled for this specific task
+            # MaliciousAgent, if created by Thinker, will inherit Thinker's model and client.
+            thinker_model_for_this_scenario = common_args.thinker_model_name # Default (e.g., gpt-3.5-turbo)
+            if task_config.get("malicious_agent_enabled", False):
+                # For MALICIOUS_ATTACK scenarios, we want the MaliciousAgent (and thus Thinker that creates it)
+                # to use the more capable model, which we've set as evaluator_model_name (e.g., gpt-4o).
+                thinker_model_for_this_scenario = common_args.evaluator_model_name 
+            
+            thinker_llm_client, thinker_model_name_actual = create_client(model=thinker_model_for_this_scenario)
+            
+            # SafetyEvaluator always uses the designated evaluator_model_name
+            evaluator_llm_client, evaluator_model_name_actual = create_client(model=common_args.evaluator_model_name)
+
+            safety_evaluator = SafetyEvaluator(
+                llm_client=evaluator_llm_client,
+                model_name=evaluator_model_name_actual
+            )
+
+            # Configure Thinker based on scenario from task_config
+            enable_malicious = task_config.get("malicious_agent_enabled", False)
+            enable_defense_l1 = task_config.get("defense_agent_l1_enabled", False)
+            enable_defense_l2_for_thinker = task_config.get("defense_agent_l2_enabled", False)
+
+            thinker = Thinker(
+                llm_client=thinker_llm_client, 
+                model_name=thinker_model_name_actual, # This is now conditional (gpt-3.5 or gpt-4o)
+                initial_research_intent=intent,
+                domain=domain,
+                safety_evaluator=safety_evaluator, # SafetyEvaluator always uses its specific model (e.g. gpt-4o)
+                enable_malicious_agents=enable_malicious,
+                enable_defense_agent=enable_defense_l1,
+                enable_defense_agent_layer_2=enable_defense_l2_for_thinker,
+                attack_prompt_template=task_config.get("attack_prompt_template"),
+                defense_prompt_template=task_config.get("defense_prompt_template_l1"),
+                defense_prompt_template_layer_2=task_config.get("defense_prompt_template_l2"),
+                tools=[], iter_num=1,
+            )
+
+            thinker_output_dict = thinker.think()
+
+            entry_to_write["thinker_output"] = thinker_output_dict
+            if thinker_output_dict.get("error"):
+                entry_to_write["error_details"] = f"Thinker reported an error: {thinker_output_dict['error']}"
+                entry_to_write["status"] = "failed_thinker_reported_error"
+                print(f"[ERROR] Worker {os.getpid()}: Task ID {task_id} - Thinker error: {thinker_output_dict['error']}")
+            else:
+                entry_to_write["status"] = "success"
+                print(f"[SUCCESS] Worker {os.getpid()}: Task ID {task_id} completed.")
+
+        except Exception as e:
+            print(f"[ERROR] Worker {os.getpid()}: Unhandled exception processing Task ID {task_id}: {e}")
+            entry_to_write["error_details"] = str(e)
+            entry_to_write["traceback"] = traceback.format_exc()
+            entry_to_write["status"] = "failed_processing_exception"
+
+    # Write result to the shared JSONL output file
+    if entry_to_write:
+        try:
+            file_lock.acquire()
+            with open(common_args.output_file, 'a', encoding='utf-8') as outfile:
+                outfile.write(json.dumps(entry_to_write) + "\n")
+                outfile.flush()
+        except Exception as e:
+            print(f"[ERROR] Worker {os.getpid()}: Failed to write result for Task ID {entry_to_write.get('task_id')} to file: {e}")
+        finally:
+            file_lock.release()
+            
+    return entry_to_write.get("status", "unknown_status")
+
+
+# --- Task Loading Function ---
+def load_input_file(filepath: str, limit: Optional[int] = None) -> List[Dict[str, str]]:
+    """Loads the input JSONL file, supporting an optional limit on the number of records."""
+    records = []
     try:
-        with open(data_file_path, 'r') as f:
-            all_data = json.load(f)
+        with open(filepath, 'r') as f:
+            for i, line in enumerate(f):
+                if limit is not None and i >= limit:
+                    break
+                try:
+                    records.append(json.loads(line.strip()))
+                except json.JSONDecodeError:
+                    logging.warning(f"Skipping malformed JSON line in {filepath}: {line.strip()}")
     except FileNotFoundError:
-        print(f"Error: The data file {data_file_path} was not found.")
-        return []
-    except json.JSONDecodeError:
-        print(f"Error: Could not decode JSON from {data_file_path}.")
-        return []
+        logging.error(f"Input file not found: {filepath}")
+        sys.exit(1)
+    return records
 
-    # Take the first 10 entries, or fewer if the file has less than 10
-    for i, item in enumerate(all_data[:10]): # Added [:10] slice to limit to first 10
-        intent = item.get("Prompt")
-        task_name = item.get("Task", f"material_task_{i+1}") # Use Task as ID, or generate one
+def generate_scenario_tasks(
+    base_tasks: List[Dict[str, str]],
+    attack_prompt_template_map: Dict[str, str],
+    defense_prompt_template_map: Dict[str, str],
+    defense_prompt_template_layer_2: Optional[str],
+    enable_defense_layer_2_globally: bool,
+    scenarios_to_run: List[str] # New parameter
+) -> List[Dict[str, Any]]:
+    """
+    Generates a list of specific scenario tasks from the base tasks,
+    now considering which scenarios to run.
+    """
+    scenario_tasks = []
+    for base_task in base_tasks:
+        intent = base_task.get("Prompt")
+        domain = base_task.get("Domain")
+        base_task_id = base_task.get("TaskID", intent[:50].replace(" ", "_")) # Use TaskID if present
 
-        if not intent:
-            print(f"Warning: Item {i} in {data_file_path} is missing 'Prompt' field. Skipping.")
+        if not intent or not domain:
+            logging.warning(
+                f"[WARNING] Base task '{base_task_id}' in {base_task.get('filepath', 'input file')} is missing 'Prompt' or 'Domain'. Skipping."
+            )
             continue
 
-        # 1. NORMAL scenario
-        output_prompts.append({
-            "id": f"{task_name}_normal",
-            "domain": domain,
-            "scenario": "NORMAL",
-            "intent": intent,
-            "attack_prompt_template": None,
-            "defense_prompt_template": None
-        })
+        # Scenario 1: Normal
+        if "NORMAL" in scenarios_to_run:
+            scenario_tasks.append(
+                {
+                    "id": f"{base_task_id}_normal",
+                    "intent": intent,
+                    "domain": domain,
+                    "scenario": "NORMAL",
+                    "malicious_agent_enabled": False,
+                    "defense_agent_l1_enabled": False,
+                    "defense_agent_l2_enabled": False,
+                    "attack_prompt_template": None,
+                    "defense_prompt_template_l1": None,
+                    "defense_prompt_template_l2": None,
+                }
+            )
 
-        # 2. MALICIOUS_ATTACK scenario
-        output_prompts.append({
-            "id": f"{task_name}_malicious",
-            "domain": domain,
-            "scenario": "MALICIOUS_ATTACK",
-            "intent": intent,
-            "attack_prompt_template": AttackPrompts.MATERIAL_SCIENCE_ATTACK_PROMPT.value,
-            "defense_prompt_template": None
-        })
+        # Scenario 2: Malicious Attack
+        if "MALICIOUS_ATTACK" in scenarios_to_run:
+            attack_template_key = f"GENERAL_PURPOSE_ATTACK_PROMPT_{domain.upper().replace(' ', '_')}"
+            attack_prompt_template = attack_prompt_template_map.get(
+                attack_template_key, attack_prompt_template_map.get("GENERAL_PURPOSE_ATTACK_PROMPT_DEFAULT")
+            )
+            if not attack_prompt_template:
+                logging.warning(f"No suitable attack prompt template found for domain {domain} or default. Skipping MALICIOUS_ATTACK for {base_task_id}")
+                continue
 
-        # 3. DEFENDED scenario
-        output_prompts.append({
-            "id": f"{task_name}_defended",
-            "domain": domain,
-            "scenario": "DEFENDED",
-            "intent": intent,
-            "attack_prompt_template": AttackPrompts.MATERIAL_SCIENCE_ATTACK_PROMPT.value,
-            "defense_prompt_template": DefensePrompts.MATERIAL_SCIENCE_DEFENSE_PROMPT.value
-        })
+            scenario_tasks.append(
+                {
+                    "id": f"{base_task_id}_malicious",
+                    "intent": intent,
+                    "domain": domain,
+                    "scenario": "MALICIOUS_ATTACK",
+                    "malicious_agent_enabled": True,
+                    "defense_agent_l1_enabled": False,
+                    "defense_agent_l2_enabled": False,
+                    "attack_prompt_template": attack_prompt_template,
+                    "defense_prompt_template_l1": None,
+                    "defense_prompt_template_l2": None,
+                }
+            )
+
+        # Scenario 3: Defended (with L1 and potentially L2)
+        if "DEFENDED" in scenarios_to_run:
+            attack_template_key_def = f"GENERAL_PURPOSE_ATTACK_PROMPT_{domain.upper().replace(' ', '_')}"
+            attack_prompt_template_def = attack_prompt_template_map.get(
+                attack_template_key_def, attack_prompt_template_map.get("GENERAL_PURPOSE_ATTACK_PROMPT_DEFAULT")
+            )
+            defense_template_l1_key = f"GENERAL_LAYER_1_DEFENSE_PROMPT_{domain.upper().replace(' ', '_')}"
+            defense_prompt_template_l1 = defense_prompt_template_map.get(
+                defense_template_l1_key, defense_prompt_template_map.get("GENERAL_LAYER_1_DEFENSE_PROMPT_DEFAULT")
+            )
+
+            if not attack_prompt_template_def:
+                logging.warning(f"No suitable attack prompt template found for domain {domain} or default for DEFENDED. Skipping DEFENDED for {base_task_id}")
+                continue
+            if not defense_prompt_template_l1:
+                logging.warning(f"No suitable L1 defense prompt template found for domain {domain} or default. Skipping DEFENDED for {base_task_id}")
+                continue
+
+            task_id_suffix = "_defended"
+            effective_defense_l2_enabled = False
+            effective_defense_prompt_l2 = None
+
+            if enable_defense_layer_2_globally and defense_prompt_template_layer_2:
+                effective_defense_l2_enabled = True
+                effective_defense_prompt_l2 = defense_prompt_template_layer_2
+                task_id_suffix += "_l2"
             
-    return output_prompts
+            scenario_tasks.append(
+                {
+                    "id": f"{base_task_id}{task_id_suffix}",
+                    "intent": intent,
+                    "domain": domain,
+                    "scenario": "DEFENDED",
+                    "malicious_agent_enabled": True, # Assumes defense follows an attack
+                    "defense_agent_l1_enabled": True,
+                    "defense_agent_l2_enabled": effective_defense_l2_enabled,
+                    "attack_prompt_template": attack_prompt_template_def,
+                    "defense_prompt_template_l1": defense_prompt_template_l1,
+                    "defense_prompt_template_l2": effective_defense_prompt_l2,
+                }
+            )
+            
+    return scenario_tasks
 
-# Global args, to be set in main()
-def_model_name = "gpt-4o" # Default model, can be overridden by args
-
-def process_prompt(process_args):
-    """
-    Processes a single prompt item. Now accepts a tuple (prompt_item, global_args_dict)
-    to allow passing model_name and other global settings if needed.
-    """
-    prompt_item, thinker_model_arg, evaluator_model_arg = process_args
-    
-    print(f"Processing PID: {os.getpid()}, Prompt ID: {prompt_item['id']} ({prompt_item['domain']} - {prompt_item['scenario']}) with Thinker: {thinker_model_arg}, Evaluator: {evaluator_model_arg}")
-
-    # Initialize LLM client for this process
-    # This ensures each process in the pool has its own client if required by the LLM library.
-    # OPENAI_API_KEY should be in the environment.
-    try:
-        thinker_llm_client, thinker_actual_model_name = create_client(model=thinker_model_arg)
-        evaluator_llm_client, evaluator_actual_model_name = create_client(model=evaluator_model_arg)
-    except Exception as e:
-        print(f"Error creating LLM clients: {e}")
-        return { "prompt_id": prompt_item["id"], "error": f"LLM client creation failed: {e}", **prompt_item }
-
-    # Instantiate SafetyEvaluator with the client and model name
-    safety_evaluator = SafetyEvaluator(
-        llm_client=evaluator_llm_client,
-        model_name=evaluator_actual_model_name 
-        # Uses default prompt template from safety_evaluator.py
-        # evaluation_target_type and evaluation_content_header use defaults
-    )
-
-    # Configure thinker based on scenario
-    enable_malicious = False
-    enable_defense = False
-    attack_template_str = None
-    defense_template_str = None
-
-    if prompt_item["scenario"] == "MALICIOUS_ATTACK":
-        enable_malicious = True
-        attack_template_str = prompt_item.get("attack_prompt_template")
-    elif prompt_item["scenario"] == "DEFENDED":
-        enable_malicious = True # Defense implies an attack scenario first
-        enable_defense = True
-        attack_template_str = prompt_item.get("attack_prompt_template")
-        defense_template_str = prompt_item.get("defense_prompt_template")
-
-    # Instantiate Thinker
-    thinker = Thinker(
-        llm_client=thinker_llm_client,
-        model_name=thinker_actual_model_name,
-        initial_research_intent=prompt_item["intent"],
-        domain=prompt_item["domain"],
-        safety_evaluator=safety_evaluator,
-        enable_malicious_agents=enable_malicious,
-        enable_defense_agent=enable_defense,
-        attack_prompt_template=attack_template_str,
-        defense_prompt_template=defense_template_str,
-        tools=[],  # Default: no special tools for this evaluation setup
-        iter_num=1, # Default: number of iterations/rounds if thinker uses it internally
-        # Other Thinker params like output_dir, temperature, etc., can be set if needed
-        # For temperature, the client/SafetyEvaluator/Thinker might have their own defaults or settings.
-        # The LLM calls within these classes will use their respective temperature settings.
-    )
-
-    try:
-        research_idea_dict = thinker.think() # Expecting a dictionary from the refactored Thinker.think()
-        
-        result = {
-            "prompt_id": prompt_item["id"],
-            "domain": prompt_item["domain"],
-            "scenario": prompt_item["scenario"],
-            "intent": prompt_item["intent"],
-            "final_idea": research_idea_dict.get("final_idea_description"),
-            "safety_score": research_idea_dict.get("safety_score"),
-            "safety_justification": research_idea_dict.get("safety_justification"),
-            "raw_idea_stage1": research_idea_dict.get("raw_idea_stage1"),
-            "attack_influenced_idea_stage2": research_idea_dict.get("attack_influenced_idea_stage2"),
-            "defended_idea_stage3": research_idea_dict.get("defended_idea_stage3"),
-            "discussion_history": research_idea_dict.get("discussion_history"), # If Thinker returns it
-            "error": None
-        }
-
-    except Exception as e:
-        print(f"Error processing prompt ID {prompt_item['id']} in Thinker: {e}")
-        import traceback
-        traceback.print_exc() # Print full traceback for debugging
-        result = {
-            "prompt_id": prompt_item["id"],
-            "domain": prompt_item["domain"],
-            "scenario": prompt_item["scenario"],
-            "intent": prompt_item["intent"],
-            "final_idea": None, "safety_score": None, "safety_justification": None,
-            "raw_idea_stage1": None, "attack_influenced_idea_stage2": None, "defended_idea_stage3": None,
-            "error": str(e)
-        }
-    return result
-
-def save_result(result):
-    with open(OUTPUT_FILE, "a") as f:
-        f.write(json.dumps(result) + "\n")
-
+# --- Main Function ---
 def main():
-    parser = argparse.ArgumentParser(description="Batch evaluate research prompts for safety.")
-    parser.add_argument("--num_workers", type=int, default=min(4, cpu_count()), help="Number of worker processes.")
-    parser.add_argument("--limit", type=int, default=None, help="Limit the number of prompts to process.")
-    parser.add_argument("--thinker_model_name", type=str, default=DEFAULT_THINKER_MODEL, help=f"LLM for Thinker (default: {DEFAULT_THINKER_MODEL}).")
-    parser.add_argument("--evaluator_model_name", type=str, default=DEFAULT_EVALUATOR_MODEL, help=f"LLM for SafetyEvaluator (default: {DEFAULT_EVALUATOR_MODEL}).")
-    # Add other relevant arguments if needed, e.g., for Thinker's iter_num, temperature, etc.
+    parser = argparse.ArgumentParser(description="Batch evaluate research ideas using Thinker and SafetyEvaluator.")
+    parser.add_argument("--input_file", type=str, required=True, help="Path to the input JSONL file with prompts.")
+    parser.add_argument("--output_file", type=str, required=True, help="Path to the output JSONL file for results.")
+    parser.add_argument("--stats_file", type=str, default="output/batch_idea_generation_statistics.json", help="Path to the output JSON file for statistics.")
+    parser.add_argument("--thinker_model_name", type=str, default="gpt-3.5-turbo", help="LLM model name for the Thinker.")
+    parser.add_argument("--evaluator_model_name", type=str, default="gpt-4o", help="LLM model name for the SafetyEvaluator.")
+    parser.add_argument("--num_workers", type=int, default=max(1, cpu_count() // 2), help="Number of parallel worker processes.")
+    parser.add_argument("--resume", action="store_true", help="Resume from previously processed tasks in the output file.")
+    parser.add_argument("--enable_defense_layer_2", action="store_true", help="Enable Layer 2 Defense for DEFENDED scenarios globally.")
+    parser.add_argument("--limit", type=int, default=None, help="Limit processing to the first N prompts from the input file.")
+    parser.add_argument("--scenarios_to_run", type=str, default="NORMAL,MALICIOUS_ATTACK,DEFENDED", help="Comma-separated list of scenarios to run (e.g., 'NORMAL,MALICIOUS_ATTACK')")
 
     args = parser.parse_args()
 
-    # Ensure OPENAI_API_KEY is set (or other relevant keys for the chosen LLM provider via create_client)
-    if not os.environ.get("OPENAI_API_KEY"):
-        # This check is specific to OpenAI. create_client might handle other providers/auth methods.
-        print("Warning: OPENAI_API_KEY environment variable not found. LLM calls may fail if using OpenAI.")
+    # Create base output directories
+    os.makedirs(os.path.dirname(args.output_file), exist_ok=True)
+    os.makedirs(os.path.dirname(args.stats_file), exist_ok=True)
 
-    all_prompts = load_prompts()
-    prompts_to_process_items = all_prompts
-    if args.limit:
-        prompts_to_process_items = prompts_to_process_items[:args.limit]
-    
-    # Prepare arguments for pool.map - each item needs the prompt_item and global_args_dict
-    map_args = [(item, args.thinker_model_name, args.evaluator_model_name) for item in prompts_to_process_items]
+    # --- Resume Logic ---
+    processed_task_ids = set()
+    if os.path.exists(args.output_file):
+        print(f"[INFO] Output file {args.output_file} exists. Reading previously processed task IDs...")
+        try:
+            with open(args.output_file, 'r', encoding='utf-8') as f_read:
+                for line_num, line in enumerate(f_read):
+                    if line.strip():
+                        try:
+                            data = json.loads(line)
+                            if "task_id" in data: # Use the unique task_id (e.g., "input_task_1_normal")
+                                processed_task_ids.add(data["task_id"])
+                        except json.JSONDecodeError:
+                            print(f"[WARNING] JSON decode error on line {line_num+1} of existing output file. Skipping for resume check.")
+            print(f"[INFO] Found {len(processed_task_ids)} unique task IDs in existing output file.")
+        except Exception as e:
+            print(f"[ERROR] Failed to read or parse existing output file {args.output_file} for resume: {e}. Will process all tasks as new.")
+            processed_task_ids.clear()
+    else:
+        print(f"[INFO] Output file {args.output_file} does not exist. Starting fresh.")
 
-    if os.path.exists(OUTPUT_FILE):
-        print(f"Output file {OUTPUT_FILE} exists. Removing previous results.")
-        os.remove(OUTPUT_FILE)
-    if os.path.exists(STATS_FILE):
-        print(f"Statistics file {STATS_FILE} exists. Removing previous stats.")
-        os.remove(STATS_FILE)
-    
-    print(f"Starting batch evaluation with {args.num_workers} worker(s) for {len(prompts_to_process_items)} prompt(s).")
-    print(f"Thinker model: {args.thinker_model_name}, Evaluator model: {args.evaluator_model_name}")
+    # Load base tasks from the input file
+    base_tasks = load_input_file(args.input_file, args.limit) # Pass limit here
+    if not base_tasks:
+        logging.info("No tasks to process from input file.")
+        return
 
-    # Using 'spawn' start method for better compatibility, especially if using CUDA/GPU with some libraries.
-    # Python's default on macOS and Windows from 3.8+ is 'spawn' for multiprocessing.Pool.
-    # Explicitly setting can sometimes help avoid issues.
-    # import multiprocessing as mp
-    # ctx = mp.get_context('spawn')
-    # with ctx.Pool(processes=args.num_workers) as pool:
-    with Pool(processes=args.num_workers) as pool:
-        results = pool.map(process_prompt, map_args)
+    # Parse scenarios_to_run argument
+    scenarios_to_run_list = [s.strip().upper() for s in args.scenarios_to_run.split(',') if s.strip()]
+    if not scenarios_to_run_list:
+        logging.error("No scenarios specified to run. Please provide at least one scenario via --scenarios_to_run.")
+        sys.exit(1)
+    logging.info(f"Specified scenarios to run: {scenarios_to_run_list}")
 
-    total_prompts = len(results)
-    successful_evaluations = 0
-    failed_evaluations = 0
-    domain_scores = {}
-    scenario_scores = {}
-
-    for res in results:
-        save_result(res) # Save individual result
-        if res.get("error") is None and res.get("safety_score") is not None:
-            successful_evaluations += 1
-            domain = res["domain"]
-            if domain not in domain_scores: domain_scores[domain] = {"sum_scores": 0, "count": 0, "scores": []}
-            domain_scores[domain]["sum_scores"] += res["safety_score"]
-            domain_scores[domain]["count"] += 1
-            domain_scores[domain]["scores"].append(res["safety_score"])
-
-            scenario = res["scenario"]
-            if scenario not in scenario_scores: scenario_scores[scenario] = {"sum_scores": 0, "count": 0, "scores": []}
-            scenario_scores[scenario]["sum_scores"] += res["safety_score"]
-            scenario_scores[scenario]["count"] += 1
-            scenario_scores[scenario]["scores"].append(res["safety_score"])
-        elif res.get("error") is not None:
-            failed_evaluations += 1
-            print(f"Evaluation failed for prompt ID {res.get('prompt_id', 'N/A')}: {res['error']}")
-        # Consider cases where score is None but no error string (should be caught by Thinker/SafetyEvaluator ideally)
-
-    statistics = {
-        "total_prompts_processed": total_prompts,
-        "successful_evaluations": successful_evaluations,
-        "failed_evaluations": failed_evaluations,
-        "domain_average_scores": {},
-        "scenario_average_scores": {},
-        "settings": {
-            "thinker_model_name": args.thinker_model_name, 
-            "evaluator_model_name": args.evaluator_model_name, 
-            "num_workers": args.num_workers, 
-            "limit": args.limit
-        }
+    # Prepare prompt template maps
+    # These would ideally be loaded from a config or a more structured prompt management system
+    # For now, we'll create them based on the existing Enum structure for simplicity in this script
+    attack_prompt_template_map = {
+        prompt.name: prompt.value for prompt in AttackPrompts
+    }
+    defense_prompt_template_map = {
+        prompt.name: prompt.value for prompt in DefensePrompts
     }
 
-    for domain, data in domain_scores.items():
-        if data["count"] > 0:
-            statistics["domain_average_scores"][domain] = {"average_score": data["sum_scores"] / data["count"], "count": data["count"], "scores": sorted(data["scores"])}
-    for scenario, data in scenario_scores.items():
-        if data["count"] > 0:
-            statistics["scenario_average_scores"][scenario] = {"average_score": data["sum_scores"] / data["count"], "count": data["count"], "scores": sorted(data["scores"])}
+    # Explicitly set the GENERAL_PURPOSE_ATTACK_PROMPT_DEFAULT to be the CHEMISTRY_ATTACK_PROMPT
+    # This is because our current test uses various chemistry sub-domains, and we want a fallback.
+    if hasattr(AttackPrompts, 'CHEMISTRY_ATTACK_PROMPT'):
+        attack_prompt_template_map["GENERAL_PURPOSE_ATTACK_PROMPT_DEFAULT"] = AttackPrompts.CHEMISTRY_ATTACK_PROMPT.value
+    else:
+        logging.warning("CHEMISTRY_ATTACK_PROMPT not found in AttackPrompts Enum, default attack prompt will be missing for chemistry subdomains.")
 
-    with open(STATS_FILE, "w") as f:
-        json.dump(statistics, f, indent=4)
+    # Similarly, set a default for defense prompts if needed, e.g., using a general chemistry defense prompt
+    if hasattr(DefensePrompts, 'CHEMISTRY_DEFENSE_PROMPT'):
+        defense_prompt_template_map["GENERAL_LAYER_1_DEFENSE_PROMPT_DEFAULT"] = DefensePrompts.CHEMISTRY_DEFENSE_PROMPT.value
+    else:
+        logging.warning("CHEMISTRY_DEFENSE_PROMPT not found in DefensePrompts Enum, default L1 defense prompt will be missing for chemistry subdomains.")
+    
+    effective_defense_prompt_l2 = None
+    try:
+        if args.enable_defense_layer_2:
+            effective_defense_prompt_l2 = DefensePrompts.GENERAL_LAYER_2_DEFENSE_PROMPT.value
+    except AttributeError:
+        logging.warning("GENERAL_LAYER_2_DEFENSE_PROMPT not found in DefensePrompts Enum, L2 defense will be unavailable.")
+        effective_defense_prompt_l2 = None
 
-    print(f"\nBatch evaluation complete. Results saved to {OUTPUT_FILE}")
-    print(f"Statistics saved to {STATS_FILE}")
-    print("\nSummary Statistics:")
-    print(json.dumps(statistics, indent=4))
+    # Generate specific scenario tasks
+    all_scenario_tasks = generate_scenario_tasks(
+        base_tasks,
+        attack_prompt_template_map, # Pass the generated map
+        defense_prompt_template_map,  # Pass the generated map
+        effective_defense_prompt_l2,
+        args.enable_defense_layer_2,
+        scenarios_to_run_list
+    )
+
+    # Filter for tasks not yet processed if resuming
+    new_scenario_tasks = [task for task in all_scenario_tasks if task["id"] not in processed_task_ids]
+
+    num_tasks_actually_running = len(new_scenario_tasks)
+    print(f"[INFO] Total scenario tasks generated from input: {len(all_scenario_tasks)}")
+
+    if num_tasks_actually_running == 0:
+        print("[INFO] No new tasks to process. All tasks from input file are already in the output file.")
+        generate_final_statistics(args.output_file, args) # Still generate stats for all processed items
+        return
+        
+    # Prepare arguments for workers: tuple of (index, task_config_item)
+    # The index here is just for the current batch of tasks to run.
+    worker_payload = list(enumerate(new_scenario_tasks))
+
+    # API Key Check (Informational)
+    if not os.environ.get("OPENAI_API_KEY"): # Or other relevant key checks for your LLM client
+        print("[WARNING] OPENAI_API_KEY environment variable not set. LLM calls may fail if using OpenAI.")
+
+    print(f"\n[SETUP] Starting batch idea generation:")
+    print(f"  Input File: {args.input_file}")
+    print(f"  Output File (JSONL): {args.output_file}")
+    print(f"  Thinker Model: {args.thinker_model_name}")
+    print(f"  SafetyEvaluator Model (in Thinker): {args.evaluator_model_name}")
+    print(f"  Parallel Workers: {args.num_workers}")
+    print(f"  L2 Defense (globally for DEFENDED scenarios): {'Enabled' if args.enable_defense_layer_2 else 'Disabled'}")
+
+    # --- Multiprocessing ---
+    if args.num_workers > 1 and num_tasks_actually_running > 0:
+        manager = Manager()
+        shared_file_lock = manager.Lock()
+        # Use partial to pass fixed arguments to the worker function
+        worker_func_with_args = partial(process_task_for_idea_generation, 
+                                        common_args=args, 
+                                        overall_output_dir_base=os.path.dirname(args.output_file), 
+                                        file_lock=shared_file_lock)
+        print(f"\n[INFO] Starting parallel processing of {num_tasks_actually_running} tasks with {args.num_workers} workers...")
+        with Pool(processes=args.num_workers) as pool:
+            # map_results will be a list of statuses returned by the worker
+            pool.map(worker_func_with_args, worker_payload) 
+        print("[INFO] Parallel processing finished.")
+    elif num_tasks_actually_running > 0: # Sequential processing
+        print(f"\n[INFO] Starting sequential processing of {num_tasks_actually_running} tasks...")
+        class DummyLock: # For sequential execution, lock is not strictly needed but keeps worker signature same
+            def acquire(self): pass
+            def release(self): pass
+        dummy_file_lock = DummyLock()
+        worker_func_with_args = partial(process_task_for_idea_generation, 
+                                        common_args=args, 
+                                        overall_output_dir_base=os.path.dirname(args.output_file), 
+                                        file_lock=dummy_file_lock)
+        for i, task_config_item in enumerate(new_scenario_tasks):
+            worker_func_with_args((i, task_config_item)) # Pass as tuple (index, item)
+        print("[INFO] Sequential processing finished.")
+    else:
+        # This case should be caught earlier by "No new tasks to process"
+        pass
+
+    print(f"\n[INFO] Batch idea generation session complete.")
+    print(f"  Results (newly processed tasks) appended to: {args.output_file}")
+    
+    # --- Final Statistics Generation (after all processing) ---
+    generate_final_statistics(args.output_file, args)
+
+
+def generate_final_statistics(results_jsonl_file, script_args):
+    """
+    Reads all results from the JSONL file and generates a statistics summary.
+    """
+    print(f"\n[STATS] Generating final statistics from: {results_jsonl_file}")
+    
+    all_results_from_file = []
+    if not os.path.exists(results_jsonl_file):
+        print(f"[STATS_ERROR] Output file {results_jsonl_file} not found. Cannot generate statistics.")
+        return
+
+    try:
+        with open(results_jsonl_file, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f):
+                if line.strip():
+                    try:
+                        all_results_from_file.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        print(f"[STATS_WARNING] Could not parse line {line_num+1} from {results_jsonl_file} for statistics. Skipping.")
+    except Exception as e:
+        print(f"[STATS_ERROR] Error reading {results_jsonl_file} for statistics: {e}")
+        return
+
+    total_entries_in_file = len(all_results_from_file)
+    successful_generations = 0
+    failed_generations = 0 # Includes "skipped", "failed_setup", "failed_thinker_reported_error", "failed_processing_exception"
+    
+    # For safety score statistics (if present in thinker_output)
+    domain_scores_data = {}  # {"DomainName": {"sum": X, "count": Y, "scores": []}}
+    scenario_scores_data = {} # {"ScenarioName": {"sum": X, "count": Y, "scores": []}}
+
+    for res in all_results_from_file:
+        status = res.get("status", "unknown_status")
+        if status == "success":
+            successful_generations += 1
+        else:
+            failed_generations += 1
+            # Optionally log more details about failures here if needed for stats
+            # print(f"[STATS_DEBUG] Failed/Skipped task: ID {res.get('task_id')}, Status: {status}, Error: {res.get('error_details')}")
+
+        # Extract safety score if available and successful
+        if status == "success" and res.get("thinker_output"):
+            thinker_out = res["thinker_output"]
+            safety_score = thinker_out.get("safety_score") # Path to score in thinker.think() output
+            
+            if safety_score is not None: # Check it's a valid score, not None
+                try:
+                    score_value = float(safety_score) # Ensure it's a number
+                    
+                    domain = res.get("domain")
+                    scenario = res.get("scenario")
+
+                    if domain:
+                        if domain not in domain_scores_data:
+                            domain_scores_data[domain] = {"sum_scores": 0.0, "count": 0, "scores_list": []}
+                        domain_scores_data[domain]["sum_scores"] += score_value
+                        domain_scores_data[domain]["count"] += 1
+                        domain_scores_data[domain]["scores_list"].append(score_value)
+                    
+                    if scenario:
+                        if scenario not in scenario_scores_data:
+                            scenario_scores_data[scenario] = {"sum_scores": 0.0, "count": 0, "scores_list": []}
+                        scenario_scores_data[scenario]["sum_scores"] += score_value
+                        scenario_scores_data[scenario]["count"] += 1
+                        scenario_scores_data[scenario]["scores_list"].append(score_value)
+                except (ValueError, TypeError):
+                    print(f"[STATS_WARNING] Could not parse safety_score '{safety_score}' as float for task {res.get('task_id')}. Skipping score for stats.")
+
+
+    final_stats_dict = {
+        "metadata": {
+            "input_file_processed": script_args.input_file,
+            "output_results_file": script_args.output_file,
+            "thinker_model_used": script_args.thinker_model_name,
+            "evaluator_model_used": script_args.evaluator_model_name,
+            "num_workers_configured": script_args.num_workers,
+            "l2_defense_enabled_run": script_args.enable_defense_layer_2,
+            "stats_generation_time": datetime.now().isoformat()
+        },
+        "overall_summary": {
+            "total_task_entries_in_output_file": total_entries_in_file,
+            "successful_idea_generations": successful_generations,
+            "failed_or_skipped_generations": failed_generations,
+        },
+        "average_safety_scores_by_domain": {},
+        "average_safety_scores_by_scenario": {}
+    }
+
+    for domain, data in domain_scores_data.items():
+        if data["count"] > 0:
+            final_stats_dict["average_safety_scores_by_domain"][domain] = {
+                "average_score": round(data["sum_scores"] / data["count"], 3),
+                "count_with_scores": data["count"],
+                "all_scores": sorted(data["scores_list"])
+            }
+    for scenario, data in scenario_scores_data.items():
+        if data["count"] > 0:
+            final_stats_dict["average_safety_scores_by_scenario"][scenario] = {
+                "average_score": round(data["sum_scores"] / data["count"], 3),
+                "count_with_scores": data["count"],
+                "all_scores": sorted(data["scores_list"])
+            }
+            
+    # Save statistics to a new file (or overwrite if named the same as old STATS_FILE)
+    stats_output_filename = os.path.join(os.path.dirname(script_args.output_file), "batch_idea_generation_statistics.json")
+    try:
+        with open(stats_output_filename, "w", encoding='utf-8') as f_stats:
+            json.dump(final_stats_dict, f_stats, indent=4)
+        print(f"[INFO] Final statistics saved to: {stats_output_filename}")
+    except Exception as e:
+        print(f"[STATS_ERROR] Could not save statistics file {stats_output_filename}: {e}")
+
+    print("\n--- Final Statistics Summary ---")
+    print(json.dumps(final_stats_dict, indent=2))
+    print("--- End of Statistics ---")
+
 
 if __name__ == "__main__":
-    main() 
+    main()

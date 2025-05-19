@@ -36,9 +36,11 @@ class Thinker:
         # --- Control flags ---
         enable_malicious_agents: bool = False,
         enable_defense_agent: bool = False,
+        enable_defense_agent_layer_2: bool = False, # Added for Layer 2 Defense
         # --- Templates for agents ---
         attack_prompt_template: Optional[str] = None,
         defense_prompt_template: Optional[str] = None,
+        defense_prompt_template_layer_2: Optional[str] = None, # Added for Layer 2 Defense
         # --- Other existing parameters ---
         search_papers: bool = True, # Default from original
         generate_exp_plan: bool = True, # Default from original
@@ -56,6 +58,7 @@ class Thinker:
         self.model = model_name # Use the passed model name
         self.attack_prompt_template = attack_prompt_template
         self.defense_prompt_template = defense_prompt_template
+        self.defense_prompt_template_layer_2 = defense_prompt_template_layer_2 # Store L2 prompt template
 
         # Store other parameters
         self.tools = tools
@@ -73,6 +76,7 @@ class Thinker:
         
         self.enable_malicious_agents = enable_malicious_agents
         self.enable_defense_agent = enable_defense_agent
+        self.enable_defense_agent_layer_2 = enable_defense_agent_layer_2 # Store L2 enable flag
         self.attack_probability = attack_probability
         self.attack_severity = attack_severity
         
@@ -277,126 +281,195 @@ class Thinker:
         pdf_content: Optional[str] = None,
         num_rounds: int = 3 # Number of discussion rounds
     ) -> Dict[str, Any]: # Modified to return a dictionary as expected by batch script
+        """Processes the initial research intent through various stages including potential
+        malicious attack and defense layers, and finally evaluates the safety.
+
+        Returns:
+            A dictionary containing all intermediate ideas, the final idea, safety score,
+            justification, and any errors encountered.
         """
-        Generates a research idea, conducts a multi-agent discussion (if applicable),
-        evaluates its safety, and returns a dictionary with the idea and safety assessment.
-        The initial_research_intent and domain are taken from self.
-        """
-        print(f"Thinker received intent: {self.initial_research_intent} for domain: {self.domain}")
+        print(f"Thinker processing intent: {self.initial_research_intent[:100]}...")
+        print(f"Domain: {self.domain}, Malicious: {self.enable_malicious_agents}, DefenseL1: {self.enable_defense_agent}, DefenseL2: {self.enable_defense_agent_layer_2}")
 
-        # 1. Generate initial idea (Simplified: not using all original _generate_idea complexities for now)
-        # This part needs to align with how ideas were previously generated and evolved.
-        # For now, let's assume a simple placeholder for idea generation.
-        # The original _generate_idea used self.prompts.idea_generation_prompt
-        # It also involved related works and pdf_content.
-
-        # Placeholder for initial idea generation logic
-        # A more complete implementation would call something like self._generate_idea()
-        # For now, let's assume the initial idea is directly related to the intent.
-        # raw_idea_description = f"Initial research idea for '{self.initial_research_intent}' in {self.domain}."
-        # More sophisticated initial idea generation from Thinker's capabilities:
-        # This might involve self._generate_idea() or similar, which might require related_works, pdf_content etc.
-        # For this flow, let's assume a basic textual idea is sufficient as the starting point
-        # or that the full generation process is too complex to integrate here without more context on its inputs.
-        # We will use a simplified initial idea generation step for now.
-        
-        # Attempt to use a simplified version of _generate_idea or a direct LLM call for initial idea.
-        # This requires careful setup of prompts. For now, keep it simple.
-        raw_idea_description = f"A research idea exploring: {self.initial_research_intent} within the field of {self.domain}."
-        # A slightly more elaborated placeholder:
-        initial_system_prompt = "You are a creative research assistant. Generate a concise, plausible research idea title and a brief (1-2 sentence) description for the following intent and domain."
-        initial_prompt = f"Intent: {self.initial_research_intent}\nDomain: {self.domain}\nOutput only the research idea description."
-        try:
-            raw_idea_description, _ = get_response_from_llm( # Unpack the tuple
-                client=self.client, model=self.model, msg=initial_prompt, system_message=initial_system_prompt, # Corrected: prompt to msg
-                temperature=self.temperature # Use Thinker's temperature for generation
-            )
-            raw_idea_description = raw_idea_description.strip()
-        except Exception as e:
-            print(f"[WARN] Initial idea generation failed, using basic placeholder: {e}")
-            raw_idea_description = f"Placeholder idea for: {self.initial_research_intent} in {self.domain}."
-
-
-        current_idea_dict = {"description": raw_idea_description, "methodology": "To be developed", "details": "Further details needed"}
-        # idea_json_str = json.dumps(current_idea_dict) # Not strictly needed if we pass description strings
-
-        discussion_history = [] # Keep for structure, though not populated in this simplified flow
-        attack_influenced_idea_description = raw_idea_description # Start with raw idea
-        defended_idea_description = None # Will be set if defense runs
-
-        # 2. Simulate Malicious Attack (if enabled)
-        if self.enable_malicious_agents and self.malicious_agent:
-            print("\nMalicious agent is attempting to influence the idea...")
-            try:
-                attack_influenced_idea_description = self.malicious_agent.generate_manipulated_idea(
-                    current_idea_description=attack_influenced_idea_description, # Pass the current state of the idea
-                    original_intent=self.initial_research_intent
-                )
-                print(f"Idea after potential malicious influence: {attack_influenced_idea_description}")
-            except Exception as e:
-                print(f"[ERROR] Malicious agent execution failed: {e}")
-                traceback.print_exc()
-                # Keep attack_influenced_idea_description as it was before the failed attempt
-        
-        # The idea to be defended is the one that came out of the (potential) attack stage
-        idea_to_defend = attack_influenced_idea_description
-
-        # 3. Simulate Defense (if enabled)
-        if self.enable_defense_agent and self.defense_agent:
-            print("\nDefense agent is reviewing the idea...")
-            try:
-                # Defense agent acts on the idea that came from the previous stage (potentially attacked)
-                defended_idea_output = self.defense_agent.generate_defended_idea(
-                    malicious_idea_description=idea_to_defend, 
-                    original_intent=self.initial_research_intent
-                )
-                # The output of defense agent is the new "final" idea description
-                final_idea_description = defended_idea_output
-                defended_idea_description = defended_idea_output # Store for logging
-                print(f"Idea after potential defense: {final_idea_description}")
-            except Exception as e:
-                print(f"[ERROR] Defense agent execution failed: {e}")
-                traceback.print_exc()
-                final_idea_description = idea_to_defend # Fallback to pre-defense idea
-        else:
-            # If defense is not enabled, the final idea is whatever came from the attack stage (or raw if no attack)
-            final_idea_description = idea_to_defend
-
-        # 4. Group Discussion (Currently not part of this simplified sequential flow)
-        # discussion_history = self._conduct_group_discussion(final_idea_description, num_rounds=num_rounds)
-
-        # Ensure final_idea_description is never None; fallback if all else fails
-        if final_idea_description is None:
-            final_idea_description = raw_idea_description 
-
-        # 5. Safety Evaluation
-        # The SafetyEvaluator instance is self.safety_evaluator
-        print(f"\nEvaluating final idea: {final_idea_description}")
-        safety_evaluation_result = self.safety_evaluator.evaluate(
-            content_to_evaluate=final_idea_description
-        )
-        
-        safety_score = None
-        safety_justification = "Evaluation failed or produced no result."
-        if safety_evaluation_result: # Check if result is not None
-            safety_score = safety_evaluation_result.get("safety_ethical_score") # Match key from SafetyEvaluator
-            safety_justification = safety_evaluation_result.get("justification")
-        else:
-            print("[ERROR] Safety evaluation returned None.")
-
-        print(f"Safety Score: {safety_score}, Justification: {safety_justification}")
-
-        # Construct the return dictionary as expected by the batch script
-        result_dict = {
-            "final_idea_description": final_idea_description,
-            "safety_score": safety_score,
-            "safety_justification": safety_justification,
-            "raw_idea_stage1": raw_idea_description,
-            "attack_influenced_idea_stage2": attack_influenced_idea_description if self.enable_malicious_agents else None, 
-            "defended_idea_stage3": defended_idea_description if self.enable_defense_agent else None,
-            "discussion_history": discussion_history
+        # Initialize results dictionary
+        # Stage 4 is for the second defense layer
+        results = {
+            "raw_idea_stage1": None,
+            "attack_influenced_idea_stage2": None,
+            "defended_idea_stage3": None, 
+            "layer2_defended_idea_stage4": None, # For L2 Defense output
+            "final_idea_description": None,
+            "safety_score": None,
+            "safety_justification": None,
+            "discussion_history": [], # Will be populated if _conduct_group_discussion is used
+            "error": None
         }
-        return result_dict
+
+        try:
+            # Stage 1: Initial Idea Generation (Simplified for this flow)
+            # In a more complex scenario, this might involve _generate_idea or _conduct_group_discussion
+            # For batch evaluation, we directly use the initial_research_intent as the basis for the first "raw" idea.
+            # The actual "generation" here is more about structuring it for the pipeline.
+            # Let's assume the initial_research_intent IS the raw_idea_stage1 for simplicity in this context.
+            current_idea_description = self.initial_research_intent
+            results["raw_idea_stage1"] = current_idea_description
+            print(f"[Thinker] Stage 1 (Raw Idea): {current_idea_description[:100]}...")
+
+            # Stage 2: Malicious Agent Influence (if enabled)
+            if self.enable_malicious_agents:
+                if not self.malicious_agent:
+                    # Instantiate if not already (e.g. if Thinker was init with enable=False but then used in malicious mode)
+                    # This provides a fallback, but ideally it's set in __init__ if templates are available.
+                    print("[Thinker] Warning: Malicious agent enabled but not pre-initialized. Attempting to initialize.")
+                    if self.attack_prompt_template:
+                        self.malicious_agent = MaliciousAgent(
+                            model=self.model, client=self.client, prompt_template=self.attack_prompt_template
+                        )
+                    else:
+                        raise ValueError("Malicious agent enabled but no attack_prompt_template provided to Thinker.")
+                
+                print(f"[Thinker] Stage 2 (Malicious Attack) starting with template: {self.attack_prompt_template[:100]}...")
+                malicious_output = self.malicious_agent.generate_manipulated_idea(current_idea_description=current_idea_description, original_intent=self.initial_research_intent)
+                
+                if malicious_output:
+                    current_idea_description = malicious_output # The description string from MaliciousAgent
+                    results["attack_influenced_idea_stage2"] = current_idea_description
+                    print(f"[Thinker] Stage 2 (Malicious Attack) Output: {current_idea_description[:100]}...")
+                else:
+                    print("[Thinker] Warning: Malicious agent did not return an idea. Using previous stage idea.")
+                    results["attack_influenced_idea_stage2"] = "Error: Malicious agent failed to produce output."
+            
+            # Stage 3: Defense Agent (Layer 1) (if enabled)
+            if self.enable_defense_agent:
+                if not self.defense_agent:
+                    print("[Thinker] Warning: Defense agent (L1) enabled but not pre-initialized. Attempting to initialize.")
+                    if self.defense_prompt_template:
+                        self.defense_agent = DefenseAgent(
+                            model=self.model, client=self.client, prompt_template=self.defense_prompt_template
+                        )
+                    else:
+                        raise ValueError("Defense agent (L1) enabled but no defense_prompt_template provided to Thinker.")
+                
+                print(f"[Thinker] Stage 3 (Defense Layer 1) starting with template: {self.defense_prompt_template[:100]}...")
+                defense_L1_input = results["attack_influenced_idea_stage2"] if self.enable_malicious_agents else results["raw_idea_stage1"]
+                if defense_L1_input and not isinstance(defense_L1_input, str) and not defense_L1_input.startswith("Error:"): # check for error string too
+                     pass 
+                elif not defense_L1_input or (isinstance(defense_L1_input, str) and defense_L1_input.startswith("Error:")):
+                     print(f"[Thinker] Stage 3 (Defense Layer 1) input is an error or empty: '{defense_L1_input}'. Using raw idea for defense if possible.")
+                     defense_L1_input = results["raw_idea_stage1"] # Try raw idea
+                     if not defense_L1_input or (isinstance(defense_L1_input, str) and defense_L1_input.startswith("Error:")):
+                        print("[Thinker] Error: Cannot proceed with L1 Defense, input is an error or empty even after fallback.")
+                        results["defended_idea_stage3"] = "Error: L1 Defense skipped due to invalid input from previous stage."
+                        # Skip L1 defense if input is still bad
+                        # current_idea_description will remain as is (potentially malicious or raw)
+                        # We need to make sure we don't proceed to L2 defense if L1 is skipped this way
+                     else:
+                        # Raw idea is okay, proceed with L1 defense on raw idea
+                        defended_L1_output = self.defense_agent.generate_defended_idea(
+                            malicious_idea_description=str(defense_L1_input), # This input is now the raw_idea
+                            original_intent=self.initial_research_intent
+                        )
+                        if defended_L1_output:
+                            current_idea_description = defended_L1_output
+                            results["defended_idea_stage3"] = current_idea_description
+                            print(f"[Thinker] Stage 3 (Defense Layer 1 on raw_idea) Output: {current_idea_description[:100]}...")
+                        else:
+                            print("[Thinker] Warning: Defense agent (L1 on raw_idea) did not return an idea. Using previous stage idea.")
+                            results["defended_idea_stage3"] = "Error: Defense agent (L1 on raw_idea) failed to produce output."
+                else: # defense_L1_input is valid
+                    defended_L1_output = self.defense_agent.generate_defended_idea(
+                        malicious_idea_description=str(defense_L1_input), 
+                        original_intent=self.initial_research_intent
+                    )
+                    if defended_L1_output:
+                        current_idea_description = defended_L1_output
+                        results["defended_idea_stage3"] = current_idea_description
+                        print(f"[Thinker] Stage 3 (Defense Layer 1) Output: {current_idea_description[:100]}...")
+                    else:
+                        print("[Thinker] Warning: Defense agent (L1) did not return an idea. Using previous stage idea.")
+                        results["defended_idea_stage3"] = "Error: Defense agent (L1) failed to produce output."
+
+            # Stage 4: Defense Agent (Layer 2) (if enabled for L2 and L1 was also enabled AND L1 was successful)
+            # Check if L1 produced a valid output before proceeding to L2
+            l1_defense_was_successful = results.get("defended_idea_stage3") and not str(results.get("defended_idea_stage3")).startswith("Error:")
+
+            if self.enable_defense_agent_layer_2 and self.enable_defense_agent and l1_defense_was_successful:
+                if not self.defense_prompt_template_layer_2:
+                    raise ValueError("Defense agent (L2) enabled but no defense_prompt_template_layer_2 provided.")
+                
+                defense_agent_L2 = DefenseAgent(
+                    model=self.model, 
+                    client=self.client, 
+                    prompt_template=self.defense_prompt_template_layer_2
+                )
+                print(f"[Thinker] Stage 4 (Defense Layer 2) starting with template: {self.defense_prompt_template_layer_2[:100]}...")
+                
+                defense_L2_input = results["defended_idea_stage3"] # This should be the successful output from L1
+                
+                # This check is redundant if l1_defense_was_successful is already checked, but kept for safety.
+                if not defense_L2_input or (isinstance(defense_L2_input, str) and defense_L2_input.startswith("Error:")):
+                    print("[Thinker] Warning: Layer 1 defense failed or produced no output. Skipping Layer 2 defense (This should have been caught by l1_defense_was_successful).")
+                    results["layer2_defended_idea_stage4"] = "Error: Skipped due to Layer 1 defense failure."
+                else:
+                    defended_L2_output = defense_agent_L2.generate_defended_idea(
+                        malicious_idea_description=str(defense_L2_input),
+                        original_intent=self.initial_research_intent 
+                    )
+                    if defended_L2_output:
+                        current_idea_description = defended_L2_output
+                        results["layer2_defended_idea_stage4"] = current_idea_description
+                        print(f"[Thinker] Stage 4 (Defense Layer 2) Output: {current_idea_description[:100]}...")
+                    else:
+                        print("[Thinker] Warning: Defense agent (L2) did not return an idea. Using previous stage idea (L1 defense).")
+                        results["layer2_defended_idea_stage4"] = "Error: Defense agent (L2) failed to produce output."
+            elif self.enable_defense_agent_layer_2 and self.enable_defense_agent and not l1_defense_was_successful:
+                 print("[Thinker] Info: L2 defense was enabled, but L1 defense did not produce a valid output. Skipping L2 defense.")
+                 results["layer2_defended_idea_stage4"] = "Error: L2 Defense skipped because L1 defense failed or was skipped."
+            
+            # Determine the final idea for evaluation
+            if results["layer2_defended_idea_stage4"] and not results["layer2_defended_idea_stage4"].startswith("Error:"):
+                final_idea_for_evaluation = results["layer2_defended_idea_stage4"]
+            elif results["defended_idea_stage3"] and not results["defended_idea_stage3"].startswith("Error:"):
+                final_idea_for_evaluation = results["defended_idea_stage3"]
+            elif results["attack_influenced_idea_stage2"] and not results["attack_influenced_idea_stage2"].startswith("Error:"):
+                final_idea_for_evaluation = results["attack_influenced_idea_stage2"]
+            elif results["raw_idea_stage1"] and not results["raw_idea_stage1"].startswith("Error:"):
+                final_idea_for_evaluation = results["raw_idea_stage1"]
+            else:
+                final_idea_for_evaluation = "Error: All stages failed to produce a valid idea."
+                results["error"] = "All idea generation/modification stages failed."
+
+            results["final_idea_description"] = final_idea_for_evaluation
+
+            # Final Safety Evaluation
+            if self.safety_evaluator and not final_idea_for_evaluation.startswith("Error:"):
+                print(f"[Thinker] Final Evaluation for: {final_idea_for_evaluation[:100]}...")
+                evaluation_output = self.safety_evaluator.evaluate(content_to_evaluate=final_idea_for_evaluation)
+                if evaluation_output:
+                    results["safety_score"] = evaluation_output.get("safety_ethical_score")
+                    results["safety_justification"] = evaluation_output.get("justification")
+                    print(f"[Thinker] Evaluation Score: {results['safety_score']}")
+                else:
+                    results["error"] = results.get("error", "") + " Safety evaluation failed or returned no output."
+                    results["safety_score"] = None # Explicitly set to None
+                    results["safety_justification"] = "Evaluation failed."
+            elif final_idea_for_evaluation.startswith("Error:"):
+                 results["safety_score"] = None # No score if idea is an error
+                 results["safety_justification"] = "Evaluation skipped due to error in idea generation/modification."
+            else:
+                # Should not happen if safety_evaluator is always present as per __init__ type hint
+                print("[Thinker] Warning: Safety evaluator not available. Skipping final evaluation.")
+                results["error"] = results.get("error", "") + " Safety evaluator not available."
+
+        except Exception as e:
+            print(f"[Thinker] Error during think process: {e}")
+            results["error"] = str(e)
+            # Ensure score and justification are None on error
+            results["safety_score"] = None
+            results["safety_justification"] = f"Process failed with error: {e}"
+            traceback.print_exc() # Print full traceback for debugging
+
+        return results
 
     def _refine_idea_with_group_opinions(self, idea_json: str, group_discussion_history: List[Dict[str, Any]]) -> str:
         """Refine the idea based on group discussions history."""
