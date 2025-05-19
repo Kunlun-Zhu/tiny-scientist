@@ -480,6 +480,8 @@ class ToolExperimenter:
                 all_tasks = json.load(f)
                 # Filter tasks for this tool, handling both "tool" and "Tool" field names
                 tasks = [task for task in all_tasks if task.get("tool", task.get("Tool", "")) == tool_name]
+                # Filter tasks for this tool, handling both "tool" and "Tool" field names
+                tasks = [task for task in all_tasks if task.get("tool", task.get("Tool", "")) == tool_name]
                 logger.info(f"Found {len(tasks)} tasks for {tool_name}")
         except Exception as e:
             logger.error(f"Failed to load tasks for {tool_name}: {e}")
