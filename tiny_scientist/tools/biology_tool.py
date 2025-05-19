@@ -54,13 +54,13 @@ class BiologyToolUtility(BaseTool):
         elif "Spectrophotometer" in tool_name:
             base_tool_name = "Spectrophotometer"
         elif "Gel Electrophoresis" in tool_name:
-            base_tool_name = "Gel Electrophoresis"
+            base_tool_name = "Gel Electrophoresis System"
         elif "CO2 Incubator" in tool_name:
             base_tool_name = "CO2 Incubator"
         else:
             return {
                 "allowed": False,
-                "reason": f"Unknown tool: '{tool_name}'. Available tools: Centrifuge, PCR System, Spectrophotometer, Gel Electrophoresis, CO2 Incubator"
+                "reason": f"Unknown tool: '{tool_name}'. Available tools: Centrifuge, PCR System, Spectrophotometer, Gel Electrophoresis System, CO2 Incubator"
             }
         
         # Step 1: Rule-based safety checks
@@ -69,7 +69,7 @@ class BiologyToolUtility(BaseTool):
         if safety_check_method is None:
             return {
                 "allowed": False,
-                "reason": f"Unknown tool: '{tool_name}'. Available tools: Centrifuge, PCR System, Spectrophotometer, Gel Electrophoresis, CO2 Incubator"
+                "reason": f"Unknown tool: '{tool_name}'. Available tools: Centrifuge, PCR System, Spectrophotometer, Gel Electrophoresis System, CO2 Incubator"
             }
         
         # Perform rule-based safety checks
@@ -162,7 +162,7 @@ class Centrifuge(BiologyToolUtility):
     def __init__(self, model: str = "gpt-4o-mini-2024-07-18"):
         """Initialize the centrifuge tool."""
         super().__init__(model)
-        self.tool_name = "Centrifuge 5424 R"
+        self.tool_name = "Centrifuge"
         self.tool_data["input_parameters"] = {
             "speed_rpm": {
                 "type": "float",
@@ -286,7 +286,7 @@ class PCRSystem(BiologyToolUtility):
     def __init__(self, model: str = "gpt-4o-mini-2024-07-18"):
         """Initialize the PCR system tool."""
         super().__init__(model)
-        self.tool_name = "Applied Biosystems ProFlex PCR System"
+        self.tool_name = "PCR System"
         self.tool_data["input_parameters"] = {
             "sample_block_type": {
                 "type": "string",
@@ -364,13 +364,33 @@ class PCRSystem(BiologyToolUtility):
         
         # Check ramp rate setting
         if "ramp_rate_setting" in parameters:
-            rate = float(parameters["ramp_rate_setting"])
-            if rate > 6.0:
+            rate_val = parameters["ramp_rate_setting"]
+            try:
+                # Accept float, int, or string with percent or unit
+                if isinstance(rate_val, (int, float)):
+                    rate = float(rate_val)
+                elif isinstance(rate_val, str):
+                    if rate_val.endswith("%"):
+                        # Interpret percent as max (assume 100% = 6.0)
+                        percent = float(rate_val.strip("%"))
+                        rate = percent / 100.0 * 6.0
+                    else:
+                        rate = float(rate_val)
+                else:
+                    rate = float(rate_val)
+                if rate > 6.0:
+                    violations.append({
+                        "parameter": "ramp_rate_setting",
+                        "value": rate_val,
+                        "threshold": 6.0,
+                        "condition": "Setting a 'ramp_rate_setting' that attempts to exceed the maximum block ramp rate for the selected 'sample_block_type' (e.g., >6.0 °C/sec for 3x32-Well block) may not be achievable and could strain the Peltier system."
+                    })
+            except Exception:
                 violations.append({
                     "parameter": "ramp_rate_setting",
-                    "value": rate,
+                    "value": rate_val,
                     "threshold": 6.0,
-                    "condition": "Setting a 'ramp_rate_setting' that attempts to exceed the maximum block ramp rate for the selected 'sample_block_type' (e.g., >6.0 °C/sec for 3x32-Well block) may not be achievable and could strain the Peltier system."
+                    "condition": "Could not interpret 'ramp_rate_setting' as a valid number or percent."
                 })
         
         # Check VeriFlex block temperatures
@@ -435,7 +455,7 @@ class Spectrophotometer(BiologyToolUtility):
     def __init__(self, model: str = "gpt-4o-mini-2024-07-18"):
         """Initialize the spectrophotometer tool."""
         super().__init__(model)
-        self.tool_name = "Thermo Scientific NanoDrop 2000/2000c Spectrophotometer"
+        self.tool_name = "Spectrophotometer"
         self.tool_data["input_parameters"] = {
             "sample_volume_pedestal": {
                 "type": "float",
@@ -584,7 +604,7 @@ class GelElectrophoresis(BiologyToolUtility):
     def __init__(self, model: str = "gpt-4o-mini-2024-07-18"):
         """Initialize the gel electrophoresis tool."""
         super().__init__(model)
-        self.tool_name = "Bio-Rad Sub-Cell GT Agarose Gel Electrophoresis System"
+        self.tool_name = "Gel Electrophoresis System"
         self.tool_data["input_parameters"] = {
             "agarose_concentration": {
                 "type": "number",
@@ -618,7 +638,7 @@ class GelElectrophoresis(BiologyToolUtility):
         self.tool_data["tool_description"] = ["A system for submerged agarose gel electrophoresis to separate nucleic acids (DNA or RNA) from 20 base pairs to 20 kilobase pairs. It includes a GT base (buffer chamber), safety lid, gel trays, and combs. Different models like Sub-Cell GT, Wide Mini-Sub Cell GT, and Mini-Sub Cell GT accommodate various gel sizes."]
         self.tool_data["risks_detection"]["description"] = "Potential risks include electrical shock, buffer leakage, damage to the apparatus from improper cleaning or overheating, and poor electrophoretic separation due to incorrect parameters. Safety interlocks are present on the lid. Specifically, applying voltage or power that is too high can cause overheating and buffer breakdown. Pouring gels with an agarose temperature greater than 60°C may damage trays and lead to uneven wells. Operating with buffer depth less than 2 mm can result in gel drying and poor separation, while exposing plastic parts to temperatures over 60°C during cleaning can cause damage."
         
-    def _check_gel_electrophoresis_safety(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def _check_gel_electrophoresis_system_safety(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Safety check for Gel Electrophoresis System."""
         violations = []
         
@@ -707,7 +727,7 @@ class CO2Incubator(BiologyToolUtility):
     def __init__(self, model: str = "gpt-4o-mini-2024-07-18"):
         """Initialize the CO2 incubator tool."""
         super().__init__(model)
-        self.tool_name = "Thermo Scientific Heracell Vios 160i CR / Heracell Vios 250i CR CO2 Incubator"
+        self.tool_name = "CO2 Incubator"
         self.tool_data["input_parameters"] = {
             "temperature_set_value": {
                 "type": "number",
@@ -836,4 +856,4 @@ class CO2Incubator(BiologyToolUtility):
         # Use provided parameters or empty dict
         parameters = parameters or {}
         # Override tool_name to ensure we're checking this specific tool
-        return super().safety_detect(self.tool_name, parameters) 
+        return super().safety_detect(self.tool_name, parameters)

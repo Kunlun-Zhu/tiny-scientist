@@ -31,6 +31,31 @@ class ChemicalToolUtility(BaseTool):
             }
         }
     
+    def _normalize_tool_name(self, tool_name: str) -> str:
+        """
+        Normalize tool name for method lookup.
+        
+        Args:
+            tool_name: Original tool name
+            
+        Returns:
+            Normalized tool name for method lookup
+        """
+        # Remove description after dash and parenthetical content
+        base_name = tool_name.split(' - ')[0].strip()
+        base_name = base_name.split('(')[0].strip()
+        
+        # Replace special characters with spaces
+        base_name = base_name.replace('-', ' ').replace('/', ' ')
+        
+        # Convert to lowercase and replace spaces with underscores
+        normalized = base_name.lower().replace(' ', '_')
+        
+        # Remove any remaining special characters
+        normalized = ''.join(c for c in normalized if c.isalnum() or c == '_')
+        
+        return normalized
+    
     def safety_detect(self, tool_name: str = None, parameters: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Generic safety checking method for chemical tools.
@@ -48,13 +73,23 @@ class ChemicalToolUtility(BaseTool):
         # Use provided tool_name or self.tool_name
         tool_name = tool_name or self.tool_name
         
+        # Normalize tool name for method lookup
+        normalized_name = self._normalize_tool_name(tool_name)
+        
         # Step 1: Rule-based safety checks
-        safety_check_method = getattr(self, f"_check_{tool_name.lower().replace(' ', '_')}_safety", None)
+        safety_check_method = getattr(self, f"_check_{normalized_name}_safety", None)
         
         if safety_check_method is None:
+            available_tools = [
+                "High-Pressure Reactor",
+                "Rotary Evaporator",
+                "Distillation Apparatus",
+                "Column Chromatography System",
+                "Spray Dryer"
+            ]
             return {
                 "allowed": False,
-                "reason": f"Unknown tool: '{tool_name}'. Available tools: High-Pressure Reactor, Rotary Evaporator, Distillation Apparatus, Column Chromatography System, Spray Dryer"
+                "reason": f"Unknown tool: '{tool_name}'. Available tools: {', '.join(available_tools)}"
             }
         
         # Perform rule-based safety checks

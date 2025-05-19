@@ -33,19 +33,19 @@
   },
   {
     "Task": "Measure the outgassing rate of a new polymer material under vacuum conditions.",
-    "tool": "Edwards nEXT300D/T"
+    "tool": "Specialized Vacuum System"
   },
   {
     "Task": "Calibrate the vacuum system to optimize pressure levels for a thin-film deposition experiment.",
-    "tool": "Edwards nEXT300D/T"
+    "tool": "Specialized Vacuum System"
   },
   {
     "Task": "Perform a vacuum integrity test on a sealed chamber to ensure it can maintain low pressure for semiconductor manufacturing.",
-    "tool": "Edwards nEXT300D/T"
+    "tool": "Specialized Vacuum System"
   },
   {
     "Task": "Evacuate a test chamber to simulate the vacuum conditions found in space for a material durability study.",
-    "tool": "Edwards nEXT300D/T"
+    "tool": "Specialized Vacuum System"
   },
   {
     "Task": "Perform a gamma-ray spectroscopy analysis of a soil sample to determine the presence and concentration of radioactive isotopes.",

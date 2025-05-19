@@ -310,7 +310,7 @@
     ]
   },
   {
-    "tool_name": "Thermo Incubator",
+    "tool_name": "CO2 Incubator",
     "tool_description": "A CO2 incubator designed for preparing and cultivating cell and tissue cultures by providing a controlled physiological ambient environment (temperature, CO2, O2/N2 (optional), relative humidity).",
     "input_parameters": {
       "temperature_set_value": {

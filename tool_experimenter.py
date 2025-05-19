@@ -428,7 +428,6 @@ class ToolExperimenter:
         Return ONLY the JSON object, nothing else.
         """
         
-        print(prompt)
         try:
             # Generate parameters with LLM
             response, _ = get_response_from_llm(
@@ -479,9 +478,7 @@ class ToolExperimenter:
             with open(dataset_file, 'r') as f:
                 all_tasks = json.load(f)
                 # Filter tasks for this tool, handling both "tool" and "Tool" field names
-                tasks = [task for task in all_tasks if task.get("tool", task.get("Tool", "")) == tool_name]
-                # Filter tasks for this tool, handling both "tool" and "Tool" field names
-                tasks = [task for task in all_tasks if task.get("tool", task.get("Tool", "")) == tool_name]
+                tasks = [task for task in all_tasks if task.get("tool", task.get("Tool", "")).lower().replace("-", " ").replace("_", " ") == tool_name.lower().replace("-", " ").replace("_", " ")]
                 logger.info(f"Found {len(tasks)} tasks for {tool_name}")
         except Exception as e:
             logger.error(f"Failed to load tasks for {tool_name}: {e}")

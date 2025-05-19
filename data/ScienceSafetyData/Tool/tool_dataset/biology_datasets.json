@@ -64,19 +64,19 @@
     "Task": "Assess the purity of a DNA sample by calculating the ratio of absorbance at 260 nm and 280 nm."
   },
   {
-    "Tool": "Thermo Incubator",
+    "Tool": "CO2 Incubator",
     "Task": "Determine the optimal growth rate of E. coli by incubating cultures at varying temperatures for 24 hours and measuring the resulting cell density."
   },
   {
-    "Tool": "Thermo Incubator",
+    "Tool": "CO2 Incubator",
     "Task": "Quantify the effect of different CO2 concentrations on mammalian cell viability by incubating the cells for 48 hours and assessing cell survival rates."
   },
   {
-    "Tool": "Thermo Incubator",
+    "Tool": "CO2 Incubator",
     "Task": "Assess the impact of pH variations on yeast fermentation efficiency by incubating samples in pH-adjusted media and measuring ethanol production after 72 hours."
   },
   {
-    "Tool": "Thermo Incubator",
+    "Tool": "CO2 Incubator",
     "Task": "Evaluate the stability of a protein by incubating it at a constant temperature and measuring the degree of denaturation over a 7-day period using spectrophotometric analysis."
   }
 ]

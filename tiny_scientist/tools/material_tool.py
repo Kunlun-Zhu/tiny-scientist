@@ -45,19 +45,38 @@ class MaterialToolUtility(BaseTool):
         
         # Use provided tool_name or self.tool_name
         tool_name = tool_name or self.tool_name
-        
-        # Extract base tool name (remove description after dash and parenthetical content)
+
+        # Enhanced base tool name extraction for X-ray Diffractometer
         base_tool_name = tool_name.split(' - ')[0].strip()
         # Remove content within parentheses
         base_tool_name = base_tool_name.split('(')[0].strip()
-        
+        # Special handling for X-ray Diffractometer
+        if 'x-ray diffractometer' in tool_name.lower() or 'xrd' in tool_name.lower():
+            base_tool_name = 'XRayDiffractometer'
+        elif 'tube furnace' in tool_name.lower():
+            base_tool_name = 'Tube Furnace'
+        elif 'ball mill' in tool_name.lower():
+            base_tool_name = 'Ball Mill'
+        elif 'scanning electron microscope' in tool_name.lower() or 'sem' in tool_name.lower():
+            base_tool_name = 'Scanning Electron Microscope'
+        elif 'physical vapor deposition' in tool_name.lower() or 'pvd' in tool_name.lower():
+            base_tool_name = 'Physical Vapor Deposition'
+
         # Step 1: Rule-based safety checks
-        safety_check_method = getattr(self, f"_check_{base_tool_name.lower().replace(' ', '_')}_safety", None)
-        
+        method_map = {
+            'Tube Furnace': '_check_tube_furnace_safety',
+            'Ball Mill': '_check_ball_mill_safety',
+            'XRayDiffractometer': '_check_x_ray_diffractometer_safety',
+            'Scanning Electron Microscope': '_check_scanning_electron_microscope_safety',
+            'Physical Vapor Deposition': '_check_physical_vapor_deposition_safety',
+        }
+        method_name = method_map.get(base_tool_name)
+        safety_check_method = getattr(self, method_name, None) if method_name else None
+
         if safety_check_method is None:
             return {
                 "allowed": False,
-                "reason": f"Unknown tool: '{tool_name}'. Available tools: Tube Furnace, Ball Mill"
+                "reason": f"Unknown tool: '{tool_name}'. Available tools: Tube Furnace, Ball Mill, X-ray Diffractometer (XRD), Scanning Electron Microscope (SEM), Physical Vapor Deposition (PVD) System"
             }
         
         # Perform rule-based safety checks

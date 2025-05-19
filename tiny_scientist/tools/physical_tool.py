@@ -28,6 +28,39 @@ class PhysicalToolUtility(BaseTool):
                 "threshold_conditions": []
             }
         }
+        # Map dataset tool names to method names
+        self.tool_method_map = {
+            "High-power pulsed laser": "_check_high_power_pulsed_laser_safety",
+            "Radiation detection system": "_check_radiation_detection_system_safety",
+            "Specialized Vacuum System": "_check_vacuum_system_safety",
+            "Neutron emitter": "_check_neutron_emitter_safety",
+            "Linear/Compact Particle Accelerator": "_check_particle_accelerator_safety"
+        }
+    
+    def _normalize_tool_name(self, tool_name: str) -> str:
+        """
+        Normalize tool name for method lookup.
+        
+        Args:
+            tool_name: Original tool name
+            
+        Returns:
+            Normalized tool name for method lookup
+        """
+        # Remove description after dash and parenthetical content
+        base_name = tool_name.split(' - ')[0].strip()
+        base_name = base_name.split('(')[0].strip()
+        
+        # Replace special characters with spaces
+        base_name = base_name.replace('-', ' ').replace('/', ' ')
+        
+        # Convert to lowercase and replace spaces with underscores
+        normalized = base_name.lower().replace(' ', '_')
+        
+        # Remove any remaining special characters
+        normalized = ''.join(c for c in normalized if c.isalnum() or c == '_')
+        
+        return normalized
     
     def safety_detect(self, tool_name: str = None, parameters: Dict[str, Any] = None) -> Dict[str, Any]:
         """
@@ -46,18 +79,23 @@ class PhysicalToolUtility(BaseTool):
         # Use provided tool_name or self.tool_name
         tool_name = tool_name or self.tool_name
         
-        # Extract base tool name (remove description after dash and parenthetical content)
-        base_tool_name = tool_name.split(' - ')[0].strip()
-        # Remove content within parentheses
-        base_tool_name = base_tool_name.split('(')[0].strip()
+        # Get the safety check method name from the mapping
+        safety_check_method_name = self.tool_method_map.get(tool_name)
         
-        # Step 1: Rule-based safety checks
-        safety_check_method = getattr(self, f"_check_{base_tool_name.lower().replace(' ', '_')}_safety", None)
+        if safety_check_method_name is None:
+            available_tools = list(self.tool_method_map.keys())
+            return {
+                "allowed": False,
+                "reason": f"Unknown tool: '{tool_name}'. Available tools: {', '.join(available_tools)}"
+            }
+        
+        # Get the safety check method
+        safety_check_method = getattr(self, safety_check_method_name, None)
         
         if safety_check_method is None:
             return {
                 "allowed": False,
-                "reason": f"Unknown tool: '{tool_name}'. Available tools: High-power pulsed laser, Radiation detection system, Vacuum System, Neutron emitter, Particle Accelerator"
+                "reason": f"Safety check method {safety_check_method_name} not found for tool {tool_name}"
             }
         
         # Perform rule-based safety checks
@@ -150,7 +188,7 @@ class HighPowerPulsedLaser(PhysicalToolUtility):
     def __init__(self, model: str = "gpt-4o-mini-2024-07-18"):
         """Initialize the high-power pulsed laser tool."""
         super().__init__(model)
-        self.tool_name = "High-power pulsed laser (Nd:YAG, Ti:Sapphire) - Spectra‑Physics Quanta‑Ray Lab‑170"
+        self.tool_name = "High-power pulsed laser"
         self.tool_data["input_parameters"] = {
             "wavelength": {
                 "type": "float",
@@ -341,7 +379,7 @@ class RadiationDetectionSystem(PhysicalToolUtility):
     def __init__(self, model: str = "gpt-4o-mini-2024-07-18"):
         """Initialize the radiation detection system tool."""
         super().__init__(model)
-        self.tool_name = "Radiation detection system (HPGe, Scintillator, μRWell) - The Canberra liquid‑nitrogen‑cooled HPGe spectroscopy system"
+        self.tool_name = "Radiation detection system"
         self.tool_data["input_parameters"] = {
             "detection_sensitivity": {
                 "type": "float",
@@ -445,7 +483,7 @@ class VacuumSystem(PhysicalToolUtility):
     def __init__(self, model: str = "gpt-4o-mini-2024-07-18"):
         """Initialize the vacuum system tool."""
         super().__init__(model)
-        self.tool_name = "Specialized Vacuum System (TMPs, CDGs) - Edwards nEXT300D/T"
+        self.tool_name = "Specialized Vacuum System"
         self.tool_data["input_parameters"] = {
             "pressure_setpoint": {
                 "type": "float",
@@ -609,7 +647,7 @@ class NeutronEmitter(PhysicalToolUtility):
     def __init__(self, model: str = "gpt-4o-mini-2024-07-18"):
         """Initialize the neutron emitter tool."""
         super().__init__(model)
-        self.tool_name = "Neutron emitter (Am-Be, DD/DT source) - Thermo Fisher Scientific MP 320"
+        self.tool_name = "Neutron emitter"
         self.tool_data["input_parameters"] = {
             "accelerator_voltage": {
                 "type": "float",
@@ -714,7 +752,7 @@ class ParticleAccelerator(PhysicalToolUtility):
     def __init__(self, model: str = "gpt-4o-mini-2024-07-18"):
         """Initialize the particle accelerator tool."""
         super().__init__(model)
-        self.tool_name = "Linear/Compact Particle Accelerator - DESY FLASH TESLA‑type superconducting cryomodule free‑electron laser accelerator"
+        self.tool_name = "Linear/Compact Particle Accelerator"
         self.tool_data["input_parameters"] = {
             "beam_energy": {
                 "type": "float",
