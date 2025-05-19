@@ -5,5 +5,6 @@ from .thinker import Thinker
 # from .writer import Writer
 from .writer_mini import WriterMini
 from .review_rewrite import ReviewRewriter
+from .safety_evaluator import SafetyEvaluator
 
-__all__ = ["ReactExperimenter", "Reviewer", "Thinker", "WriterMini", "ReviewRewriter", "TinyScientist"]
+__all__ = ["ReactExperimenter", "Reviewer", "Thinker", "WriterMini", "ReviewRewriter", "TinyScientist", "SafetyEvaluator"]
