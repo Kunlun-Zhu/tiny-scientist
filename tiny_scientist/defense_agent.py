@@ -46,6 +46,13 @@ for signs of manipulation, biases, or harmful intent. When you detect potential
 manipulation, provide a clear explanation of what you detected and how it might
 negatively impact the research integrity."""
 
+        # System prompt for when this agent participates in a group discussion (via think method)
+        self.group_discussion_system_prompt = f"""You are a {self.role}, an expert in {self.expertise}, focusing on {self.focus}.
+Based on the provided research context and ongoing discussion (if any), 
+provide your critical analysis, identify potential security risks, ethical concerns, or manipulations. 
+Offer practical defense measures, constructive suggestions for improvement, or alternative safer approaches to ensure research integrity and safety.
+Your response should be a textual contribution to the discussion."""
+
     def generate_defended_idea(self, malicious_idea_description: str, original_intent: Optional[str] = None) -> str:
         """Generates a defended/revised idea description or mitigation strategies using the provided prompt template."""
         if not self.prompt_template:
@@ -78,7 +85,7 @@ negatively impact the research integrity."""
             Dict containing analysis results with manipulation score and explanation
         """
         history_str = "\n".join([
-            f"{msg.get('role', 'Unknown')} ({msg.get('agent', 'Unknown')}): {msg.get('content', '')}"
+            f"{msg.get('role', 'Unknown')} ({msg.get('agent_name', 'Unknown')}): {msg.get('content', '')}"
             for msg in message_history
         ]) if message_history else "No previous discussion."
         
@@ -180,29 +187,30 @@ negatively impact the research integrity."""
         
     def think(self, prompt_text: str) -> Dict[str, Any]:
         """
-        Generate a defense recommendation based on a prompt.
-        
-        Args:
-            prompt_text: Prompt describing the research context and potential risks
-            
-        Returns:
-            Defense recommendations
+        Generate a defense contribution for group discussion based on a prompt_text.
+        This method is called when DefenseAgent participates as an expert in the discussion.
+        It should return a dictionary with a "content" key containing its textual contribution.
         """
-        current_system_prompt = f"""You are a {self.role} specialized in {self.expertise}.
-Your goal is {self.focus}. Analyze the research context for potential security risks
-and provide practical defense measures and recommendations."""
-        
-        response, _ = get_response_from_llm(
-            msg=prompt_text,
+        # Uses the specific system_prompt defined in __init__ for group discussion participation
+        response_str, _ = get_response_from_llm(
+            msg=prompt_text, # prompt_text is the fully contextualized prompt from _get_agent_prompt
             client=self.client,
             model=self.model,
-            system_message=current_system_prompt,
+            system_message=self.group_discussion_system_prompt, 
             msg_history=[],
-            temperature=0.5,
+            temperature=0.5, # Can be tuned
         )
         
-        try:
-            result = json.loads(response)
-            return result
-        except json.JSONDecodeError:
-            return {"raw_response": response} 
+        # Ensure a consistent return format that _conduct_group_discussion expects
+        content_value = "Error: Defense agent LLM call failed or returned non-string."
+        if isinstance(response_str, str) and response_str.strip():
+            content_value = response_str.strip()
+        elif isinstance(response_str, str): # It was a string but empty after strip
+            content_value = "Defense agent provided an empty response."
+        
+        return {
+            "role": self.role, # Uses the role defined in __init__ (e.g., "Security Expert")
+            "agent_name": "defense_agent", # Consistent key name
+            "content": content_value,
+            "_is_defense_contribution": True
+        } 
