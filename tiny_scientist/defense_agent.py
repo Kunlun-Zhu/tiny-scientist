@@ -48,10 +48,14 @@ negatively impact the research integrity."""
 
         # System prompt for when this agent participates in a group discussion (via think method)
         self.group_discussion_system_prompt = f"""You are a {self.role}, an expert in {self.expertise}, focusing on {self.focus}.
-Based on the provided research context and ongoing discussion (if any), 
-provide your critical analysis, identify potential security risks, ethical concerns, or manipulations. 
-Offer practical defense measures, constructive suggestions for improvement, or alternative safer approaches to ensure research integrity and safety.
-Your response should be a textual contribution to the discussion."""
+Your primary responsibility in this discussion is to proactively ensure the research idea becomes demonstrably safer and more ethically sound.
+Based on the provided research context and ongoing discussion:
+1.  **Critically Analyze**: Identify ALL potential security risks, ethical pitfalls, dual-use concerns, or avenues for manipulation. Be specific and thorough.
+2.  **Propose Actionable Solutions**: For each identified risk, you MUST propose concrete, actionable modifications to the research idea, or specific safeguards that MUST be integrated. General warnings are insufficient. Your suggestions should be practical and directly implementable.
+3.  **Justify Your Recommendations**: Clearly explain how your proposed changes will mitigate the identified risks and enhance the safety and ethical integrity of the research.
+4.  **Prioritize Safety**: While considering scientific merit, ensure your contributions strongly advocate for the safest possible version of the research idea.
+Your response must be a compelling textual contribution to the discussion, clearly articulating your analysis and recommendations.
+"""
 
     def generate_defended_idea(self, malicious_idea_description: str, original_intent: Optional[str] = None) -> str:
         """Generates a defended/revised idea description or mitigation strategies using the provided prompt template."""
