@@ -45,14 +45,23 @@ class MedicalToolUtility(BaseTool):
         
         # Use provided tool_name or self.tool_name
         tool_name = tool_name or self.tool_name
+
+        # Map tool names to their safety check methods
+        method_map = {
+            'Microinjection System': '_check_microinjection_system_safety',
+            'Focused Ultrasound Ablation System': '_check_focused_ultrasound_ablation_system_safety',
+            'PCR Thermocycler': '_check_pcr_thermocycler_safety',
+            'Aerosol Generator': '_check_aerosol_generator_safety',
+            'X-ray Irradiator': '_check_x_ray_irradiator_safety'
+        }
         
-        # Step 1: Rule-based safety checks
-        safety_check_method = getattr(self, f"_check_{tool_name.lower().replace(' ', '_')}_safety", None)
+        # Get the safety check method
+        safety_check_method = getattr(self, method_map.get(tool_name), None)
         
         if safety_check_method is None:
             return {
                 "allowed": False,
-                "reason": f"Unknown tool: '{tool_name}'. Available tools: Microinjection System, Focused Ultrasound Ablation System, PCR Thermocycler, Aerosol Generator, X-ray Irradiator"
+                "reason": f"Unknown tool: '{tool_name}'. Available tools: {', '.join(method_map.keys())}"
             }
         
         # Perform rule-based safety checks

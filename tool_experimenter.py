@@ -118,7 +118,7 @@ class SafeExperimentInstructor(ExperimentInstructor):
             When generating parameters for this tool, please ensure they adhere to these guidelines.
             Choose conservative values well within safe operating ranges.
             """
-            
+            print(safety_instructions)
             return safety_instructions
             
         except Exception as e:

@@ -549,28 +549,45 @@ def get_batch_responses_from_llm_with_tools(
 
 
 def extract_json_between_markers(llm_output: str) -> Optional[Dict[str, Any]]:
-    # Regular expression pattern to find JSON content between ```json and ```
-    json_pattern = r"```json(.*?)```"
+    """
+    Extract JSON content from LLM output, handling both code block and raw JSON formats.
+    
+    Args:
+        llm_output: The raw output from the LLM
+        
+    Returns:
+        Parsed JSON dictionary or None if no valid JSON found
+    """
+    # First try: Look for JSON in code blocks
+    json_pattern = r"```(?:json)?\s*(\{.*?\})\s*```"
     matches = re.findall(json_pattern, llm_output, re.DOTALL)
-
-    if not matches:
-        # Fallback: Try to find any JSON-like content in the output
-        json_pattern = r"\{.*?\}"
-        matches = re.findall(json_pattern, llm_output, re.DOTALL)
-
-    for json_string in matches:
-        json_string = json_string.strip()
-        try:
-            parsed_json = cast(Dict[str, Any], json.loads(json_string))
-            return parsed_json
-        except json.JSONDecodeError:
-            # Attempt to fix common JSON issues
+    
+    if matches:
+        for json_string in matches:
             try:
-                parsed_json = cast(Dict[str, Any], json.loads(json_string))
-                return parsed_json
+                return cast(Dict[str, Any], json.loads(json_string))
             except json.JSONDecodeError:
-                continue  # Try next match
-
+                continue
+    
+    # Second try: Look for raw JSON object
+    try:
+        # Clean the string and try to parse as raw JSON
+        cleaned = llm_output.strip()
+        if cleaned.startswith('{') and cleaned.endswith('}'):
+            return cast(Dict[str, Any], json.loads(cleaned))
+    except json.JSONDecodeError:
+        pass
+    
+    # Third try: Find any JSON-like structure
+    json_pattern = r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
+    matches = re.findall(json_pattern, llm_output, re.DOTALL)
+    
+    for json_string in matches:
+        try:
+            return cast(Dict[str, Any], json.loads(json_string))
+        except json.JSONDecodeError:
+            continue
+    
     return None  # No valid JSON found
 
 
