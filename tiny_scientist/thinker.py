@@ -130,6 +130,13 @@ class Thinker:
             "Importance", "Difficulty", "NoveltyComparison", "Experiment"
         ]
 
+        self.default_criteria_descriptions = """1. Intent Alignment: How well does each idea address the original research intent?
+        2. Scientific Merit: How significant is the potential contribution to the field?
+        3. Novelty: How original is the idea compared to existing work?
+        4. Feasibility: How practical is implementation within reasonable resource constraints?
+        5. Impact: What is the potential impact of this research on the field and broader applications?"""
+
+
     def _get_agent_prompt(self, agent_info: Dict[str, str], idea_json: str, intent: str, related_works: str, history: List[Dict[str, str]]) -> str:
         """Generate a prompt for a specific agent role."""
         history_str = "\n".join([
@@ -224,11 +231,11 @@ SUGGESTIONS: [Your specific suggestions for improvement]"""
                     "original_thought": thought_content, # Store pre-manipulation thought
                     "original_suggestions": suggestions_content, # Store pre-manipulation suggestions
                 }
-
+                
                 # Log the (potentially modified) content to discussion_history for full transparency
-                self.discussion_history.append({
+                    self.discussion_history.append({
                     "agent_name": expert_name,
-                    "role": expert_info['role'],
+                        "role": expert_info['role'],
                     "round": round_num + 1,
                     "content": f"THOUGHT: {current_group_opinion_for_history.get('manipulated_thought', current_group_opinion_for_history['original_thought'])}\nSUGGESTIONS: {current_group_opinion_for_history.get('manipulated_suggestions', current_group_opinion_for_history['original_suggestions'])}",
                     # Add more fields if malicious/defense agents modify them, e.g., "is_manipulated", "is_corrected"
@@ -569,14 +576,25 @@ SUGGESTIONS: [Your specific suggestions for improvement]"""
         # Return the idea(s) and the discussion history (e.g., of the first idea)
         return final_ideas_to_return, first_discussion_history
 
+    def show_ranking_criteria(self, custom_criteria: Optional[str] = None) -> str:
+        """Show the ranking criteria descriptions that will be used"""
+        return (
+            custom_criteria if custom_criteria else self.default_criteria_descriptions
+        )
+
     def rank(
-        self, ideas: List[Dict[str, Any]], intent: Optional[str] = None
+        self,
+        ideas: List[Dict[str, Any]],
+        intent: Optional[str] = None,
+        custom_criteria: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Rank multiple research ideas."""
         intent = intent or self.intent
 
         ideas_json = json.dumps(ideas, indent=2)
-        evaluation_result = self._get_idea_evaluation(ideas_json, intent)
+        evaluation_result = self._get_idea_evaluation(
+            ideas_json, intent, custom_criteria
+        )
         ranked_ideas = self._parse_evaluation_result(evaluation_result, ideas)
 
         return ranked_ideas
@@ -587,7 +605,6 @@ SUGGESTIONS: [Your specific suggestions for improvement]"""
         original_idea: Dict[str, Any],
         modifications: List[Dict[str, Any]],
         behind_idea: Optional[Dict[str, Any]] = None,
-        all_ideas: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Modify an idea based on score adjustments.
@@ -636,24 +653,6 @@ SUGGESTIONS: [Your specific suggestions for improvement]"""
             print("Failed to extract modified idea")
             return original_idea
 
-        # Apply metadata from original idea
-        modified_idea["id"] = f"node-{len(all_ideas) + 1}" if all_ideas else "node-1"
-        modified_idea["parent_id"] = original_idea.get("id", "unknown")
-        modified_idea["is_modified"] = True
-
-        # Re-rank the modified idea along with all other ideas
-        if all_ideas:
-            ranking_ideas = [
-                idea for idea in all_ideas if idea.get("id") != original_idea.get("id")
-            ]
-            ranking_ideas.append(modified_idea)
-
-            ranked_ideas = self.rank(ranking_ideas, self.intent)
-
-            for idea in ranked_ideas:
-                if idea.get("id") == modified_idea.get("id"):
-                    return idea
-
         return modified_idea
 
     @api_calling_error_exponential_backoff(retries=5, base_wait_time=2)
@@ -686,33 +685,6 @@ SUGGESTIONS: [Your specific suggestions for improvement]"""
         if not merged_idea:
             print("Failed to extract merged idea")
             return None
-
-        # Add metadata about the merged sources
-        merged_idea["id"] = f"node-{len(all_ideas) + 1}" if all_ideas else "node-1"
-        merged_idea["parent_ids"] = [
-            idea_a.get("id", "unknown"),
-            idea_b.get("id", "unknown"),
-        ]
-        merged_idea["is_merged"] = True
-
-        # Re-rank the merged idea along with all other ideas
-        if all_ideas:
-            # Create a list with all ideas except the ones being merged, plus the new merged idea
-            ranking_ideas = [
-                idea
-                for idea in all_ideas
-                if idea.get("id") != idea_a.get("id")
-                and idea.get("id") != idea_b.get("id")
-            ]
-            ranking_ideas.append(merged_idea)
-
-            # Rank all ideas together
-            ranked_ideas = self.rank(ranking_ideas, self.intent)
-
-            # Find and return the merged idea from the ranked list
-            for idea in ranked_ideas:
-                if idea.get("id") == merged_idea.get("id"):
-                    return idea
 
         # If no other ideas provided or ranking failed, return just the merged idea
         return merged_idea
@@ -750,6 +722,8 @@ SUGGESTIONS: [Your specific suggestions for improvement]"""
         prompt = self.prompts.idea_evaluation_prompt.format(
             intent=intent, ideas=ideas_json
         )
+        if custom_criteria:
+            prompt = prompt.replace(self.default_criteria_descriptions, custom_criteria)
 
         text, _ = get_response_from_llm(
             prompt,
@@ -887,8 +861,8 @@ SUGGESTIONS: [Your specific suggestions for improvement]"""
             if any(keyword in text_to_check for keyword in keywords): return 'computational'
                 
         print("[INFO] thinker._determine_experiment_type: Defaulting to 'computational'.")
-        return 'computational'
-
+                return 'computational'
+                
     @api_calling_error_exponential_backoff(retries=3, base_wait_time=2) # Added retry
     def _generate_experiment_plan(self, idea_json_str: str) -> str:
         print(f"[DEBUG] thinker._generate_experiment_plan: Received idea string: {idea_json_str[:200]}...")
@@ -983,7 +957,7 @@ SUGGESTIONS: [Your specific suggestions for improvement]"""
             if pdf_content
             else ""
         )
-        
+
         # The system prompt should strongly guide the LLM to produce JSON with all WRITER_MINI_REQUIRED_KEYS
         # System prompt content is loaded from YAML, ensure it's well-defined there.
         
@@ -991,7 +965,7 @@ SUGGESTIONS: [Your specific suggestions for improvement]"""
             self.prompts.idea_first_prompt.format(
                 intent=intent,
                 related_works_string=related_works_string,
-                num_reflections=1, 
+                num_reflections=1,
                 pdf_section=pdf_section,
             ),
             client=self.client,
@@ -1009,8 +983,8 @@ SUGGESTIONS: [Your specific suggestions for improvement]"""
         if not isinstance(idea_dict, dict):
             print(f"[ERROR] thinker._generate_idea: Failed to extract valid JSON dict. LLM response snippet: {llm_response_text[:500]}...")
             # Return an empty dict string; 'think' method will handle final structure.
-            return json.dumps({}) 
-        
+            return json.dumps({})
+
         print(f"[DEBUG] thinker._generate_idea: Successfully extracted initial idea dict. Keys: {list(idea_dict.keys())}")
         return json.dumps(idea_dict, indent=2)
 
